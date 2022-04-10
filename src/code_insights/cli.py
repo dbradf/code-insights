@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from time import perf_counter
 from typing import List, Optional
 
 import click
@@ -25,6 +26,7 @@ def cli(ctx, mongo_uri: str):
 @inject.autoparams()
 def _coupling(git_proxy: GitProxy, mongo: Mongo, after_date: str, repo_dir: Optional[str]) -> None:
 
+    start = perf_counter()
     output = git_proxy.log(
         all=True,
         numstat=True,
@@ -32,13 +34,15 @@ def _coupling(git_proxy: GitProxy, mongo: Mongo, after_date: str, repo_dir: Opti
         # %h == abbreviated commit hash
         # %ad == author date
         # %aN == author name
-        pretty="--%h--%ad--%aN",
+        pretty="--%h--%cd--%aN--%s",
         no_renames=True,
         after=after_date,
         excludes=["site_scons/", "debian/", "src/third_party/"],
         directory=Path(repo_dir),
     )
+    print(f"Reading from git in: {perf_counter() - start}s")
 
+    start = perf_counter()
     changes: List[GitCommit] = []
     current_commit = None
     for line in output.splitlines():
@@ -53,6 +57,7 @@ def _coupling(git_proxy: GitProxy, mongo: Mongo, after_date: str, repo_dir: Opti
                 commit=parts[1],
                 date=parts[2],
                 author=parts[3],
+                summary=parts[4],
                 files=[]
             )
         else:
@@ -66,9 +71,11 @@ def _coupling(git_proxy: GitProxy, mongo: Mongo, after_date: str, repo_dir: Opti
                     filename=parts[2]
                 )
             )
+    print(f"Creating commits in: {perf_counter() - start}s")
 
-    for change in changes:
-        mongo.add_commit(change)
+    start = perf_counter()
+    mongo.bulk_add_commit(changes)
+    print(f"Loading to mongo in: {perf_counter() - start}s")
 
 
 @cli.command()
@@ -77,6 +84,19 @@ def _coupling(git_proxy: GitProxy, mongo: Mongo, after_date: str, repo_dir: Opti
 @click.pass_context
 def coupling(ctx, after_date: str, repo_dir: Optional[str]) -> None:
     _coupling(after_date=after_date, repo_dir=repo_dir)
+
+
+@inject.autoparams()
+def _files_per_commit(mongo: Mongo) -> None:
+    items = mongo.get_files_per_commit()
+    for item in items:
+        print(f"{item.id}: {item.avg_files}")
+
+
+@cli.command()
+@click.pass_context
+def files_per_commit(ctx) -> None:
+    _files_per_commit()
 
 
 def main():
